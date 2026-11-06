@@ -238,7 +238,7 @@ async function withCodec(fn) {
   return fn(zstd);
 }
 
-async function zstdCompress(data, level = 19) {
+async function zstdCompress(data, level = 3) {
   return withCodec((zstd) => {
     const codec = new zstd.Simple();
     try {
@@ -270,7 +270,7 @@ async function encodeCode(slots) {
   }));
 
   const json = JSON.stringify(encodeSlots);
-  const compressed = await zstdCompress(json, 19);
+  const compressed = await zstdCompress(json, 3);
 
   // Safe base64 conversion without chunking corruption or stack overflow
   const bytes = new Uint8Array(compressed);
