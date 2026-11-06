@@ -617,11 +617,9 @@ function buildMoveset(blocks, res, blockSize, gap, duration, moveType, effectTyp
       line.push({ K_NAME: 'WAIT', TIME: Math.round((t - prev) * 1000) / 1000 });
     }
     prev = t;
-    groups.get(t.toFixed(3)).forEach(b => {
+groups.get(t.toFixed(3)).forEach(b => {
       const pos = blockPosition(b, res, pitch);
-      line.push(moveType === 'particle'
-        ? buildVISUALot(b, blockSize, effectType, pos, life)
-        : buildHITBOX(blockSize, pos));
+      line.push(buildVISUALot(b, blockSize, effectType, pos, life));
     });
   });
 
