@@ -53,23 +53,23 @@
     </div>
     <div class="row">
       <label>Move Type</label>
-      <select id="moveType">
-        <option value="hitbox">Hitbox (invisible collision)</option>
-        <option value="particle">Particle (visible effect)</option>
-      </select>
+  <select id="moveType">
+    <option value="particle" selected>Particle (visible effect)</option>
+    <option value="hitbox">Hitbox (invisible collision)</option>
+  </select>
     </div>
-    <div class="row" id="effectTypeRow" style="display:none">
+<div class="row" id="effectTypeRow" style="display:flex">
       <label>VFX Effect</label>
       <select id="effectType">
-        <option value="Particle">Particle</option>
-        <option value="Block">Block (big pixel)</option>
-        <option value="Circle Glow">Circle Glow</option>
+        <option value="Block" selected>Block (solid pixel)</option>
         <option value="Sphere">Sphere</option>
-        <option value="Ring">Ring</option>
+        <option value="Circle Glow">Circle Glow</option>
         <option value="Glow">Glow</option>
+        <option value="Ring">Ring</option>
         <option value="Star">Star</option>
         <option value="Wedge">Wedge</option>
         <option value="Cylinder">Cylinder</option>
+        <option value="Particle">Particle (floating)</option>
         <option value="Flames">Flames</option>
         <option value="Cursed Energy">Cursed Energy</option>
         <option value="Weak Lightning">Weak Lightning</option>
