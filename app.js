@@ -625,27 +625,24 @@ function buildMoveset(blocks, res, blockSize, gap, duration, moveType, effectTyp
     });
   });
 
-  const numSlots = Math.ceil(line.length / MAX_EVENTS_PER_SLOT) || 1;
-  if (numSlots > MAX_SLOTS) {
-    throw new Error(`Too many blocks (${line.length}). Limit is ${MAX_EVENTS_PER_SLOT * MAX_SLOTS}. Lower the resolution.`);
-  }
-  if (mediaType === 'video' && numSlots > 1) {
-    throw new Error(`Video needs ${line.length} events, exceeding 1 skill limit (${MAX_EVENTS_PER_SLOT}). Reduce FPS or duration.`);
-  }
-
   const label = mediaType === 'video' ? 'Video' : 'Image';
-  const slots = [];
-  for (let s = 0; s < numSlots; s++) {
-    slots.push({
-      ADD: false,
-      NAME: numSlots === 1 ? `${label} Moveset` : `${label} Moveset ${s + 1}`,
-      K_NAME: 'SKILL',
-      KEY: s + 1,
-      COOLDOWN: mediaType === 'video' ? Math.ceil(duration) : 5,
-      DATA: { Line: line.slice(s * MAX_EVENTS_PER_SLOT, (s + 1) * MAX_EVENTS_PER_SLOT), Req: [], Prop: [] },
-      'TOOL TIP': '',
-    });
-  }
+  
+  // Keep the entire image in 1 single skill (Key 1)
+  const slots = [{
+    ADD: false,
+    NAME: `${label} Moveset`,
+    K_NAME: 'SKILL',
+    KEY: 1,
+    COOLDOWN: mediaType === 'video' ? Math.ceil(duration) : 5,
+    DATA: { Line: line, Req: [], Prop: [] },
+    'TOOL TIP': '',
+  }];
+
+  return {
+    name: `${mediaType}-moveset`,
+    slots,
+  };
+}
 
   return {
     name: `${mediaType}-moveset`,
