@@ -172,15 +172,16 @@ function updateZstdStatus(ready, message, progress) {
     zstdStatus.textContent = message;
     zstdStatus.style.color = '#ff6b6b';
     regenBtn.disabled = true;
+    regenBtn.textContent = 'zstd not loaded';
   }
 }
 
 async function loadZstdLibrary() {
   const init = () => {
-    const zstdObj = window.ZstdCodec?.ZstdCodec || window.ZstdCodec;
-    if (zstdObj && typeof zstdObj.run === 'function') {
+    const zstdClass = window.ZstdCodec?.ZstdCodec || window.ZstdCodec;
+    if (zstdClass && typeof zstdClass.run === 'function') {
       getZstdCodec = new Promise((resolve) => {
-        zstdObj.run((zstd) => {
+        zstdClass.run((zstd) => {
           resolve(zstd);
           updateZstdStatus(true, null, 100);
         });
@@ -192,7 +193,7 @@ async function loadZstdLibrary() {
 
   if (init()) return;
 
-  // Poll until CDN script finishes loading
+  // Poll while js/zstd-codec.bundle.js executes
   let attempts = 0;
   const poll = setInterval(() => {
     attempts++;
@@ -200,7 +201,7 @@ async function loadZstdLibrary() {
       clearInterval(poll);
     } else if (attempts > 50) {
       clearInterval(poll);
-      updateZstdStatus(false, 'Failed to initialize zstd library. Try refreshing.', 100);
+      updateZstdStatus(false, 'Failed to initialize zstd. Check that js/zstd-codec.bundle.js is in your folder.', 100);
     }
   }, 100);
 }
@@ -214,7 +215,7 @@ async function withCodec(fn) {
   return fn(zstd);
 }
 
-// Level 3 prevents WebAssembly OOM crashes
+// Compression level 3 prevents WebAssembly OOM crashes
 async function zstdCompress(data, level = 3) {
   return withCodec((zstd) => {
     const codec = new zstd.Simple();
