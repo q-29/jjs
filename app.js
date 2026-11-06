@@ -47,7 +47,7 @@ let zstdReady = false;
 let getZstdCodec = null;
 let isGenerating = false;
 
-// ---- Helpers ----
+// ---- Color Helpers ----
 
 function hexToRgbStr(hex) {
   let clean = hex.replace('#', '').trim();
@@ -72,7 +72,7 @@ function parseColorToRgbStr(color) {
   return '255, 255, 255';
 }
 
-// ---- UI wiring ----
+// ---- UI Wiring ----
 
 function bindSliderNum(sliderId, numId) {
   const slider = document.getElementById(sliderId);
@@ -152,7 +152,7 @@ function setGenerating(gen) {
   }
 }
 
-// ---- zstd library loading ----
+// ---- zstd Library Loader ----
 
 function updateZstdStatus(ready, message, progress) {
   zstdReady = ready;
@@ -193,7 +193,6 @@ async function loadZstdLibrary() {
 
   if (init()) return;
 
-  // Poll while js/zstd-codec.bundle.js executes
   let attempts = 0;
   const poll = setInterval(() => {
     attempts++;
@@ -201,7 +200,7 @@ async function loadZstdLibrary() {
       clearInterval(poll);
     } else if (attempts > 50) {
       clearInterval(poll);
-      updateZstdStatus(false, 'Failed to initialize zstd. Check that js/zstd-codec.bundle.js is in your folder.', 100);
+      updateZstdStatus(false, 'Failed to initialize zstd. Check that js/zstd-codec.bundle.js exists.', 100);
     }
   }, 100);
 }
@@ -215,7 +214,7 @@ async function withCodec(fn) {
   return fn(zstd);
 }
 
-// Compression level 3 prevents WebAssembly OOM crashes
+// Level 3 prevents WebAssembly OOM memory crashes
 async function zstdCompress(data, level = 3) {
   return withCodec((zstd) => {
     const codec = new zstd.Simple();
@@ -282,7 +281,7 @@ async function decodeCode(code) {
   });
 }
 
-// ---- Media handling ----
+// ---- Media Handling ----
 
 function handleMediaSelect(e) {
   const file = e.target.files[0];
@@ -521,7 +520,7 @@ function drawBlockPreview(blocks, res, gap, totalTime) {
   ctx.globalAlpha = 1.0;
 }
 
-// ---- JJS Data Model Builder (Pure Visual Blocks) ----
+// ---- JJS Moveset Builder ----
 
 const ART_DISTANCE = 8;
 const ART_HEIGHT = 4;
@@ -543,7 +542,7 @@ function buildVISUALot(b, blockSize, effectType, pos, life) {
     COLOR: c,
     'ALT COLOR': c,
     SIZE: blockSize,
-    'ALT SIZE': blockSize,
+    'ALT SIZE': 1, // 1.0x size multiplier keeps blocks frozen at original scale
     'SIZE 2': '-1, -1, -1',
     'ALT SIZE 2': '-1, -1, -1',
     OPACITY: transp,
@@ -557,10 +556,10 @@ function buildVISUALot(b, blockSize, effectType, pos, life) {
     TEXTURE: 0,
     'BODY PART': 'HumanoidRootPart',
     'EASING STYLE': 'Linear',
-    'EASING DIRECTION': 'In',
+    'EASING DIRECTION': 'InOut',
     'LAST HIT': -1,
     'CAN COLLIDE': false,
-    'CLIENT SIDED': false,
+    'CLIENT SIDED': true, // Renders locally to avoid server visual limit culling
     'RUN ON SERVER': false,
     'CANCEL ON INTERRUPT': false,
     'RELATIVE FROM BRANCH': false,
@@ -580,6 +579,14 @@ function buildMoveset(blocks, res, blockSize, gap, duration, effectType, fps) {
   const times = [...groups.keys()].map(Number).sort((a, b) => a - b);
 
   const line = [];
+
+  // Stop character velocity so walking doesn't drag the visual art
+  line.push({
+    K_NAME: 'VELO',
+    FORCE: '0, 0, 0',
+    TIME: life,
+  });
+
   let prev = null;
   times.forEach(t => {
     if (prev !== null && t > prev) {
@@ -594,7 +601,7 @@ function buildMoveset(blocks, res, blockSize, gap, duration, effectType, fps) {
 
   const label = mediaType === 'video' ? 'Video' : 'Image';
 
-  // All visual blocks in 1 single skill (Key 1)
+  // Keep entire moveset on Move 1 (Key 1)
   const slots = [{
     ADD: false,
     NAME: `${label} Moveset`,
