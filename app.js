@@ -11,9 +11,7 @@ const thresholdInput = document.getElementById('threshold');
 const colorModeInput = document.getElementById('colorMode');
 const singleColorRow = document.getElementById('singleColorRow');
 const singleColorInput = document.getElementById('singleColor');
-const moveTypeInput = document.getElementById('moveType');
 const effectTypeInput = document.getElementById('effectType');
-const effectTypeRow = document.getElementById('effectTypeRow');
 const durationInput = document.getElementById('duration');
 const fpsInput = document.getElementById('fps');
 const videoSettingsRow = document.getElementById('videoSettingsRow');
@@ -48,13 +46,16 @@ let blocks = [];
 let zstdReady = false;
 let getZstdCodec = null;
 let isGenerating = false;
-let zstdLoadTimeout = null;
 
 // ---- Helpers ----
 
 function hexToRgbStr(hex) {
-  const clean = hex.replace('#', '');
-  const bigint = parseInt(clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean, 16);
+  let clean = hex.replace('#', '').trim();
+  if (clean.length === 3) {
+    clean = clean.split('').map(c => c + c).join('');
+  }
+  const bigint = parseInt(clean, 16);
+  if (isNaN(bigint)) return '255, 255, 255';
   const r = (bigint >> 16) & 255;
   const g = (bigint >> 8) & 255;
   const b = bigint & 255;
@@ -62,8 +63,13 @@ function hexToRgbStr(hex) {
 }
 
 function parseColorToRgbStr(color) {
+  if (!color) return '255, 255, 255';
   if (color.startsWith('#')) return hexToRgbStr(color);
-  return color.replace(/rgba?\(|\)/g, '').split(',').slice(0, 3).map(s => s.trim()).join(', ');
+  const parts = color.replace(/rgba?\(|\)/g, '').split(',');
+  if (parts.length >= 3) {
+    return parts.slice(0, 3).map(s => Math.round(parseFloat(s.trim())) || 0).join(', ');
+  }
+  return '255, 255, 255';
 }
 
 // ---- UI wiring ----
@@ -91,12 +97,6 @@ bindSliderNum('gap', 'gapNum');
 bindSliderNum('threshold', 'threshNum');
 bindSliderNum('duration', 'durNum');
 bindSliderNum('fps', 'fpsNum');
-
-if (moveTypeInput && effectTypeRow) {
-  moveTypeInput.addEventListener('change', () => {
-    effectTypeRow.style.display = moveTypeInput.value === 'particle' ? 'flex' : 'none';
-  });
-}
 
 if (colorModeInput && singleColorRow) {
   colorModeInput.addEventListener('change', () => {
@@ -165,8 +165,8 @@ function updateZstdStatus(ready, message, progress) {
     zstdStatus.textContent = 'zstd ready — generating real JJS import codes.';
     zstdStatus.style.color = '#00ff9d';
     if (zstdProgressRow) zstdProgressRow.style.display = 'none';
-    if (zstdLoadTimeout) { clearTimeout(zstdLoadTimeout); zstdLoadTimeout = null; }
     regenBtn.disabled = !media;
+    regenBtn.textContent = 'Regenerate Moveset';
     if (media) generateMoveset();
   } else if (message && !ready && zstdStatus) {
     zstdStatus.textContent = message;
@@ -175,43 +175,8 @@ function updateZstdStatus(ready, message, progress) {
   }
 }
 
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = src;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error(`Failed to load ${src}`));
-    document.head.appendChild(script);
-  });
-}
-
 async function loadZstdLibrary() {
-  if (zstdProgressRow) zstdProgressRow.style.display = 'block';
-
-  let p = 0;
-  const iv = setInterval(() => {
-    p += 5;
-    if (p >= 90) clearInterval(iv);
-    if (zstdProgress) zstdProgress.style.width = p + '%';
-    if (zstdProgressText) zstdProgressText.textContent = `Loading zstd library… ${p}%`;
-  }, 100);
-
-  zstdLoadTimeout = setTimeout(() => {
-    clearInterval(iv);
-    updateZstdStatus(false, 'zstd library failed to load. Check js/zstd-codec.bundle.js', 100);
-  }, 20000);
-
-  try {
-    try {
-      await loadScript('js/zstd-codec.bundle.js');
-    } catch {
-      // Fallback to unpkg CDN if local file is missing
-      await loadScript('https://unpkg.com/zstd-codec@0.1.4/dist/zstd-codec.bundle.js');
-    }
-
-    clearInterval(iv);
-
-    // Support both direct UMD and nested module exports
+  const init = () => {
     const zstdObj = window.ZstdCodec?.ZstdCodec || window.ZstdCodec;
     if (zstdObj && typeof zstdObj.run === 'function') {
       getZstdCodec = new Promise((resolve) => {
@@ -220,13 +185,24 @@ async function loadZstdLibrary() {
           updateZstdStatus(true, null, 100);
         });
       });
-    } else {
-      updateZstdStatus(false, 'zstd library loaded but ZstdCodec.run was not found.', 100);
+      return true;
     }
-  } catch (e) {
-    clearInterval(iv);
-    updateZstdStatus(false, 'Failed to load zstd: ' + (e.message || e.toString()), 100);
-  }
+    return false;
+  };
+
+  if (init()) return;
+
+  // Poll until CDN script finishes loading
+  let attempts = 0;
+  const poll = setInterval(() => {
+    attempts++;
+    if (init()) {
+      clearInterval(poll);
+    } else if (attempts > 50) {
+      clearInterval(poll);
+      updateZstdStatus(false, 'Failed to initialize zstd library. Try refreshing.', 100);
+    }
+  }, 100);
 }
 
 loadZstdLibrary();
@@ -238,6 +214,7 @@ async function withCodec(fn) {
   return fn(zstd);
 }
 
+// Level 3 prevents WebAssembly OOM crashes
 async function zstdCompress(data, level = 3) {
   return withCodec((zstd) => {
     const codec = new zstd.Simple();
@@ -272,7 +249,6 @@ async function encodeCode(slots) {
   const json = JSON.stringify(encodeSlots);
   const compressed = await zstdCompress(json, 3);
 
-  // Safe base64 conversion without chunking corruption or stack overflow
   const bytes = new Uint8Array(compressed);
   let binary = '';
   const chunkSize = 16384;
@@ -316,7 +292,7 @@ function handleMediaSelect(e) {
   mediaType = isVideo ? 'video' : 'image';
 
   if (videoSettingsRow) {
-    videoSettingsRow.style.display = isVideo ? 'block' : 'none';
+    videoSettingsRow.style.display = isVideo ? 'flex' : 'none';
   }
 
   if (isVideo) {
@@ -386,7 +362,7 @@ async function generateMoveset() {
     const gap = parseFloat(gapInput.value);
     const threshold = parseInt(thresholdInput.value, 10);
     const colorMode = colorModeInput.value;
-    const singleColor = singleColorInput ? singleColorInput.value : '#ffffff';
+    const singleColor = singleColorInput ? singleColorInput.value : '#00ff9d';
     const duration = parseFloat(durationInput.value);
     const fps = fpsInput ? parseInt(fpsInput.value, 10) : 10;
 
@@ -399,9 +375,8 @@ async function generateMoveset() {
     drawBlockPreview(blocks, res, gap, mediaType === 'video' ? media.duration : duration);
     blockCountEl.textContent = `Blocks: ${blocks.length}`;
 
-    const moveType = moveTypeInput.value;
-    const effectType = effectTypeInput ? effectTypeInput.value : 'Particle';
-    const moveset = buildMoveset(blocks, res, blockSize, gap, duration, moveType, effectType, fps);
+    const effectType = effectTypeInput ? effectTypeInput.value : 'Block';
+    const moveset = buildMoveset(blocks, res, blockSize, gap, duration, effectType, fps);
 
     const json = JSON.stringify(moveset, null, 2);
     const code = await encodeCode(moveset.slots);
@@ -444,8 +419,6 @@ function sampleImageToBlocks(image, res, blockSize, threshold, colorMode, single
 
       blocks.push({
         gx, gy,
-        x: gx / (res - 1 || 1),
-        y: gy / (res - 1 || 1),
         color,
         size: blockSize,
         opacity: a / 255,
@@ -493,8 +466,6 @@ async function sampleVideoToBlocks(video, res, blockSize, threshold, colorMode, 
 
         blocks.push({
           gx, gy,
-          x: gx / (res - 1 || 1),
-          y: gy / (res - 1 || 1),
           color,
           size: blockSize,
           opacity: a / 255,
@@ -519,7 +490,7 @@ function seekAndDrawFrame(video, time, ctx, width, height) {
     const onSeeked = () => cleanup();
     video.addEventListener('seeked', onSeeked, { once: true });
     video.currentTime = time;
-    setTimeout(cleanup, 500); // 500ms safety timeout for slow seeks
+    setTimeout(cleanup, 500);
   });
 }
 
@@ -549,13 +520,10 @@ function drawBlockPreview(blocks, res, gap, totalTime) {
   ctx.globalAlpha = 1.0;
 }
 
-// ---- JJS Data Model Builder ----
+// ---- JJS Data Model Builder (Pure Visual Blocks) ----
 
-const MAX_EVENTS_PER_SLOT = 1500;
-const MAX_SLOTS = 4;
 const ART_DISTANCE = 8;
 const ART_HEIGHT = 4;
-
 const fmt = (n) => String(Math.round(n * 1000) / 1000);
 
 function blockPosition(b, res, pitch) {
@@ -571,34 +539,34 @@ function buildVISUALot(b, blockSize, effectType, pos, life) {
   return {
     K_NAME: 'VISUAL',
     EFFECT: effectType,
-    COLOR: c, 'ALT COLOR': c,
-    SIZE: blockSize, 'ALT SIZE': blockSize,
-    'SIZE 2': '-1, -1, -1', 'ALT SIZE 2': '-1, -1, -1',
-    OPACITY: transp, 'ALT OPACITY': transp,
-    POSITION: pos, 'ALT POSITION': pos,
-    ROTATION: '0, 0, 0', 'ALT ROTATION': '0, 0, 0',
-    TIME: life, AMOUNT: 1, TEXTURE: 0,
-    'BODY PART': 'HumanoidRootPart',
-    'EASING STYLE': 'Linear', 'EASING DIRECTION': 'In',
-    'LAST HIT': -1,
-    'CAN COLLIDE': false, 'CLIENT SIDED': false, 'RUN ON SERVER': false,
-    'CANCEL ON INTERRUPT': false, 'RELATIVE FROM BRANCH': false,
-  };
-}
-
-function buildHITBOX(blockSize, pos) {
-  return {
-    K_NAME: 'HITBOX',
-    PREVIEW: [0, 0.1],
-    DAMAGE: 1,
-    'STUN ANIM': true, 'HIT USER': false, BLOCKABLE: false, 'SINGLE TARGET': false,
-    SIZE: `${blockSize}, ${blockSize}, ${blockSize}`,
+    COLOR: c,
+    'ALT COLOR': c,
+    SIZE: blockSize,
+    'ALT SIZE': blockSize,
+    'SIZE 2': '-1, -1, -1',
+    'ALT SIZE 2': '-1, -1, -1',
+    OPACITY: transp,
+    'ALT OPACITY': transp,
     POSITION: pos,
+    'ALT POSITION': pos,
     ROTATION: '0, 0, 0',
+    'ALT ROTATION': '0, 0, 0',
+    TIME: life,
+    AMOUNT: 1,
+    TEXTURE: 0,
+    'BODY PART': 'HumanoidRootPart',
+    'EASING STYLE': 'Linear',
+    'EASING DIRECTION': 'In',
+    'LAST HIT': -1,
+    'CAN COLLIDE': false,
+    'CLIENT SIDED': false,
+    'RUN ON SERVER': false,
+    'CANCEL ON INTERRUPT': false,
+    'RELATIVE FROM BRANCH': false,
   };
 }
 
-function buildMoveset(blocks, res, blockSize, gap, duration, moveType, effectType, fps) {
+function buildMoveset(blocks, res, blockSize, gap, duration, effectType, fps) {
   const pitch = blockSize + gap;
   const life = mediaType === 'video' ? Math.round((1 / (fps || 10)) * 1000) / 1000 : duration;
 
@@ -617,15 +585,15 @@ function buildMoveset(blocks, res, blockSize, gap, duration, moveType, effectTyp
       line.push({ K_NAME: 'WAIT', TIME: Math.round((t - prev) * 1000) / 1000 });
     }
     prev = t;
-groups.get(t.toFixed(3)).forEach(b => {
+    groups.get(t.toFixed(3)).forEach(b => {
       const pos = blockPosition(b, res, pitch);
       line.push(buildVISUALot(b, blockSize, effectType, pos, life));
     });
   });
 
   const label = mediaType === 'video' ? 'Video' : 'Image';
-  
-  // Keep the entire image in 1 single skill (Key 1)
+
+  // All visual blocks in 1 single skill (Key 1)
   const slots = [{
     ADD: false,
     NAME: `${label} Moveset`,
@@ -635,12 +603,6 @@ groups.get(t.toFixed(3)).forEach(b => {
     DATA: { Line: line, Req: [], Prop: [] },
     'TOOL TIP': '',
   }];
-
-  return {
-    name: `${mediaType}-moveset`,
-    slots,
-  };
-}
 
   return {
     name: `${mediaType}-moveset`,
