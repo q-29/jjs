@@ -1,12 +1,6 @@
 /**
  * jjs — Image/Video to JJS custom moveset converter
- *
- * Fully client-side. Uses a bundled zstd-codec library for encode/decode
- * in the browser — no backend required. Works on Cloudflare Pages,
- * GitHub Pages, or any static host.
- *
- * Import in-game: Private Server → Free Build → Place Character Block →
- * Configure → Import/Clipboard → paste code.
+ * Client-side moveset generator for Jujutsu Shenanigans (Roblox)
  */
 
 const mediaInput = document.getElementById('mediaInput');
@@ -48,33 +42,44 @@ const durNum = document.getElementById('durNum');
 const fpsNum = document.getElementById('fpsNum');
 const videoPreview = document.getElementById('videoPreview');
 
-let media = null;        // HTMLImageElement or HTMLVideoElement
-let mediaType = null;    // 'image' or 'video'
-let blocks = [];         // flattened block list with time stamps
+let media = null;
+let mediaType = null;
+let blocks = [];
 let zstdReady = false;
-let getZstdCodec = null; // Promise that resolves to the codec object
+let getZstdCodec = null;
 let isGenerating = false;
 let zstdLoadTimeout = null;
+
+// ---- Helpers ----
+
+function hexToRgbStr(hex) {
+  const clean = hex.replace('#', '');
+  const bigint = parseInt(clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean, 16);
+  const r = (bigint >> 16) & 255;
+  const g = (bigint >> 8) & 255;
+  const b = bigint & 255;
+  return `${r}, ${g}, ${b}`;
+}
+
+function parseColorToRgbStr(color) {
+  if (color.startsWith('#')) return hexToRgbStr(color);
+  return color.replace(/rgba?\(|\)/g, '').split(',').slice(0, 3).map(s => s.trim()).join(', ');
+}
 
 // ---- UI wiring ----
 
 function bindSliderNum(sliderId, numId) {
   const slider = document.getElementById(sliderId);
   const num = document.getElementById(numId);
-  slider.addEventListener('input', () => {
-    num.value = slider.value;
-  });
-  num.addEventListener('input', () => {
-    slider.value = num.value;
-  });
+  if (!slider || !num) return;
+  slider.addEventListener('input', () => { num.value = slider.value; });
+  num.addEventListener('input', () => { slider.value = num.value; });
   num.addEventListener('change', () => {
-    // Clamp to min/max on change
     const min = parseFloat(num.min) || 0;
     const max = parseFloat(num.max) || 100;
     let v = parseFloat(num.value);
     if (isNaN(v)) v = min;
-    if (v < min) v = min;
-    if (v > max) v = max;
+    v = Math.min(Math.max(v, min), max);
     num.value = v;
     slider.value = v;
   });
@@ -87,21 +92,17 @@ bindSliderNum('threshold', 'threshNum');
 bindSliderNum('duration', 'durNum');
 bindSliderNum('fps', 'fpsNum');
 
-moveTypeInput.addEventListener('change', () => {
-  if (moveTypeInput.value === 'particle') {
-    effectTypeRow.style.display = 'flex';
-  } else {
-    effectTypeRow.style.display = 'none';
-  }
-});
+if (moveTypeInput && effectTypeRow) {
+  moveTypeInput.addEventListener('change', () => {
+    effectTypeRow.style.display = moveTypeInput.value === 'particle' ? 'flex' : 'none';
+  });
+}
 
-colorModeInput.addEventListener('change', () => {
-  if (colorModeInput.value === 'single') {
-    singleColorRow.style.display = 'flex';
-  } else {
-    singleColorRow.style.display = 'none';
-  }
-});
+if (colorModeInput && singleColorRow) {
+  colorModeInput.addEventListener('change', () => {
+    singleColorRow.style.display = colorModeInput.value === 'single' ? 'flex' : 'none';
+  });
+}
 
 mediaInput.addEventListener('change', handleMediaSelect);
 regenBtn.addEventListener('click', generateMoveset);
@@ -122,22 +123,20 @@ exportFormat.addEventListener('change', async () => {
       if (decoded) output.value = JSON.stringify({ slots: decoded }, null, 2);
     }
   } catch (e) {
-    console.error(e);
-    showError('Conversion failed: ' + (e.message || e.toString() || 'unknown error'));
+    showError('Conversion failed: ' + (e.message || e.toString()));
   } finally {
     setGenerating(false);
   }
 });
 
-// ---- UI helpers ----
-
 function showError(msg) {
+  if (!errorMsg) return;
   errorMsg.textContent = msg;
   errorMsg.style.display = 'block';
 }
 
 function hideError() {
-  errorMsg.style.display = 'none';
+  if (errorMsg) errorMsg.style.display = 'none';
 }
 
 function setGenerating(gen) {
@@ -146,7 +145,6 @@ function setGenerating(gen) {
   regenBtn.textContent = gen ? 'Generating…' : 'Regenerate Moveset';
   copyBtn.disabled = gen || !output.value;
   downloadBtn.disabled = gen || !output.value;
-  // Update button title to explain why it's disabled
   if (!gen) {
     if (!media) regenBtn.title = 'Upload an image or video first';
     else if (!zstdReady) regenBtn.title = 'zstd library still loading…';
@@ -158,101 +156,96 @@ function setGenerating(gen) {
 
 function updateZstdStatus(ready, message, progress) {
   zstdReady = ready;
-  if (progress !== undefined && progress !== null) {
+  if (progress !== undefined && progress !== null && zstdProgressRow) {
     zstdProgressRow.style.display = 'block';
-    zstdProgress.style.width = progress + '%';
+    if (zstdProgress) zstdProgress.style.width = progress + '%';
     if (zstdProgressText) zstdProgressText.textContent = message || '';
   }
-  if (ready) {
+  if (ready && zstdStatus) {
     zstdStatus.textContent = 'zstd ready — generating real JJS import codes.';
     zstdStatus.style.color = '#00ff9d';
-    zstdProgressRow.style.display = 'none';
+    if (zstdProgressRow) zstdProgressRow.style.display = 'none';
     if (zstdLoadTimeout) { clearTimeout(zstdLoadTimeout); zstdLoadTimeout = null; }
-    regenBtn.disabled = false;
-    regenBtn.textContent = 'Regenerate Moveset';
+    regenBtn.disabled = !media;
     if (media) generateMoveset();
-  } else if (message && !ready) {
+  } else if (message && !ready && zstdStatus) {
     zstdStatus.textContent = message;
     zstdStatus.style.color = '#ff6b6b';
     regenBtn.disabled = true;
-    regenBtn.textContent = 'zstd not loaded';
   }
 }
 
-function loadZstdBundle() {
+function loadScript(src) {
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = 'js/zstd-codec.bundle.js';
+    script.src = src;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Failed to load zstd bundle script'));
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
     document.head.appendChild(script);
   });
 }
 
 async function loadZstdLibrary() {
-  zstdProgressRow.style.display = 'block';
+  if (zstdProgressRow) zstdProgressRow.style.display = 'block';
 
-  // Simulate progress while the 6MB bundle loads
   let p = 0;
   const iv = setInterval(() => {
-    p += 3;
-    if (p >= 85) clearInterval(iv);
-    zstdProgress.style.width = p + '%';
-    if (zstdProgressText) zstdProgressText.textContent = 'Loading zstd library… ' + p + '%';
+    p += 5;
+    if (p >= 90) clearInterval(iv);
+    if (zstdProgress) zstdProgress.style.width = p + '%';
+    if (zstdProgressText) zstdProgressText.textContent = `Loading zstd library… ${p}%`;
   }, 100);
 
-  // Timeout after 20 seconds
   zstdLoadTimeout = setTimeout(() => {
     clearInterval(iv);
-    updateZstdStatus(false, 'zstd library failed to load within 20 seconds. Try refreshing the page.', 100);
+    updateZstdStatus(false, 'zstd library failed to load. Check js/zstd-codec.bundle.js', 100);
   }, 20000);
 
   try {
-    await loadZstdBundle();
+    try {
+      await loadScript('js/zstd-codec.bundle.js');
+    } catch {
+      // Fallback to unpkg CDN if local file is missing
+      await loadScript('https://unpkg.com/zstd-codec@0.1.4/dist/zstd-codec.bundle.js');
+    }
+
     clearInterval(iv);
 
-    const tryInit = () => {
-      if (typeof window.ZstdCodec !== 'undefined' && typeof window.ZstdCodec.ZstdCodec?.run === 'function') {
-        getZstdCodec = new Promise((resolve) => {
-          window.ZstdCodec.ZstdCodec.run((zstd) => {
-            resolve(zstd);
-            updateZstdStatus(true, null, 100);
-          });
+    // Support both direct UMD and nested module exports
+    const zstdObj = window.ZstdCodec?.ZstdCodec || window.ZstdCodec;
+    if (zstdObj && typeof zstdObj.run === 'function') {
+      getZstdCodec = new Promise((resolve) => {
+        zstdObj.run((zstd) => {
+          resolve(zstd);
+          updateZstdStatus(true, null, 100);
         });
-        return true;
-      }
-      return false;
-    };
-
-    if (!tryInit()) {
-      updateZstdStatus(false, 'zstd library loaded but API not found', 100);
-      return;
+      });
+    } else {
+      updateZstdStatus(false, 'zstd library loaded but ZstdCodec.run was not found.', 100);
     }
   } catch (e) {
     clearInterval(iv);
-    updateZstdStatus(false, 'Failed to load zstd library: ' + (e.message || e.toString() || 'unknown error'), 100);
+    updateZstdStatus(false, 'Failed to load zstd: ' + (e.message || e.toString()), 100);
   }
 }
 
-// Initialize zstd on page load
 loadZstdLibrary();
 
-// ---- zstd encode/decode ----
+// ---- Compression / Decompression ----
 
 async function withCodec(fn) {
   const zstd = await getZstdCodec;
   return fn(zstd);
 }
 
-async function zstdCompress(data, level) {
+async function zstdCompress(data, level = 19) {
   return withCodec((zstd) => {
     const codec = new zstd.Simple();
     try {
       const input = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-      const compressed = codec.compress(input, level);
-      return compressed;
+      return codec.compress(input, level);
     } finally {
-      codec.delete ? codec.delete() : null;
+      if (codec.delete) codec.delete();
     }
   });
 }
@@ -263,7 +256,7 @@ async function zstdDecompress(data) {
     try {
       return codec.decompress(data);
     } finally {
-      codec.delete ? codec.delete() : null;
+      if (codec.delete) codec.delete();
     }
   });
 }
@@ -271,33 +264,28 @@ async function zstdDecompress(data) {
 async function encodeCode(slots) {
   if (!zstdReady) throw new Error('zstd library not ready');
 
-  // Each slot's DATA must be a JSON string (double-encoded)
   const encodeSlots = slots.map(s => ({
     ...s,
     DATA: typeof s.DATA === 'string' ? s.DATA : JSON.stringify(s.DATA),
   }));
-  const json = JSON.stringify(encodeSlots, { separators: [',', ':'] });
+
+  const json = JSON.stringify(encodeSlots);
   const compressed = await zstdCompress(json, 19);
 
-  // base64 encode (chunked to avoid OOM on large inputs)
+  // Safe base64 conversion without chunking corruption or stack overflow
   const bytes = new Uint8Array(compressed);
-  const chunkSize = 65536;
-  let result = '';
+  let binary = '';
+  const chunkSize = 16384;
   for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
-    let binary = '';
-    for (let j = 0; j < chunk.length; j++) {
-      binary += String.fromCharCode(chunk[j]);
-    }
-    result += btoa(binary);
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
   }
-  return result;
+  return btoa(binary);
 }
 
 async function decodeCode(code) {
   if (!zstdReady) throw new Error('zstd library not ready');
 
-  let b64 = code.trim();
+  let b64 = code.trim().replace(/\s+/g, '');
   if (b64.startsWith('jjs:')) b64 = b64.slice(4);
 
   const binary = atob(b64);
@@ -306,15 +294,12 @@ async function decodeCode(code) {
   const json = new TextDecoder().decode(decompressed);
   const slots = JSON.parse(json);
 
-  // Expand inner DATA strings into nested objects
   return slots.map(slot => {
     const expanded = { ...slot };
     if (typeof expanded.DATA === 'string') {
       try {
         expanded.DATA = JSON.parse(expanded.DATA);
-      } catch (e) {
-        // keep as string
-      }
+      } catch {}
     }
     return expanded;
   });
@@ -330,53 +315,35 @@ function handleMediaSelect(e) {
   const isVideo = file.type.startsWith('video/');
   mediaType = isVideo ? 'video' : 'image';
 
-  // Show/hide video-specific settings
-  if (isVideo) {
-    videoSettingsRow.style.display = 'block';
-  } else {
-    videoSettingsRow.style.display = 'none';
+  if (videoSettingsRow) {
+    videoSettingsRow.style.display = isVideo ? 'block' : 'none';
   }
 
   if (isVideo) {
     media = videoPreview;
-    media.preload = 'metadata';
     media.src = url;
     media.onloadedmetadata = () => {
       mediaInfoEl.textContent = `Video: ${media.videoWidth}×${media.videoHeight}, ${media.duration.toFixed(2)}s`;
       drawOriginalFrame(0);
-      // Show the actual video element for preview
       videoPreview.style.display = 'block';
       origCanvas.style.display = 'none';
-      setGenerating(false); // refresh button state
-      if (zstdReady) {
-        regenBtn.disabled = false;
-        generateMoveset();
-      }
+      setGenerating(false);
+      if (zstdReady) generateMoveset();
     };
-    media.onerror = () => {
-      showError('Failed to load video file.');
-      URL.revokeObjectURL(url);
-    };
+    media.onerror = () => showError('Failed to load video file.');
   } else {
     const img = new Image();
     img.onload = () => {
       media = img;
       mediaInfoEl.textContent = `Image: ${img.width}×${img.height}`;
       drawOriginal();
-      // Hide video preview, show canvas
-      videoPreview.style.display = 'none';
+      if (videoPreview) videoPreview.style.display = 'none';
       origCanvas.style.display = 'block';
       URL.revokeObjectURL(url);
-      setGenerating(false); // refresh button state
-      if (zstdReady) {
-        regenBtn.disabled = false;
-        generateMoveset();
-      }
+      setGenerating(false);
+      if (zstdReady) generateMoveset();
     };
-    img.onerror = () => {
-      showError('Failed to load image file.');
-      URL.revokeObjectURL(url);
-    };
+    img.onerror = () => showError('Failed to load image file.');
     img.src = url;
   }
 }
@@ -384,12 +351,10 @@ function handleMediaSelect(e) {
 function drawOriginal() {
   const canvas = origCanvas;
   const ctx = canvas.getContext('2d');
-
   const maxDisp = 400;
   const scale = Math.min(maxDisp / media.width, maxDisp / media.height, 1);
   canvas.width = media.width * scale;
   canvas.height = media.height * scale;
-
   ctx.drawImage(media, 0, 0, canvas.width, canvas.height);
 }
 
@@ -397,7 +362,6 @@ function drawOriginalFrame(time) {
   const canvas = origCanvas;
   const ctx = canvas.getContext('2d');
   const vid = videoPreview;
-
   vid.currentTime = time;
   vid.onseeked = () => {
     const maxDisp = 400;
@@ -408,7 +372,7 @@ function drawOriginalFrame(time) {
   };
 }
 
-// ---- Core conversion ----
+// ---- Sampling & Generation ----
 
 async function generateMoveset() {
   if (!media || !zstdReady || isGenerating) return;
@@ -418,26 +382,26 @@ async function generateMoveset() {
 
   try {
     const res = parseInt(resolutionInput.value, 10);
-    const blockSize = parseInt(blockSizeInput.value, 10);
-    const gap = parseInt(gapInput.value, 10);
+    const blockSize = parseFloat(blockSizeInput.value);
+    const gap = parseFloat(gapInput.value);
     const threshold = parseInt(thresholdInput.value, 10);
     const colorMode = colorModeInput.value;
-    const singleColor = singleColorInput.value;
+    const singleColor = singleColorInput ? singleColorInput.value : '#ffffff';
     const duration = parseFloat(durationInput.value);
-    const fps = parseInt(fpsInput.value, 10);
+    const fps = fpsInput ? parseInt(fpsInput.value, 10) : 10;
 
     if (mediaType === 'image') {
-      blocks = sampleImageToBlocks(media, res, threshold, colorMode, singleColor, duration);
+      blocks = sampleImageToBlocks(media, res, blockSize, threshold, colorMode, singleColor, duration);
     } else {
-      blocks = await sampleVideoToBlocks(media, res, threshold, colorMode, singleColor, duration, fps);
+      blocks = await sampleVideoToBlocks(media, res, blockSize, threshold, colorMode, singleColor, duration, fps);
     }
 
-    drawBlockPreview(blocks, blockSize, gap, mediaType === 'video' ? media.duration : duration);
+    drawBlockPreview(blocks, res, gap, mediaType === 'video' ? media.duration : duration);
     blockCountEl.textContent = `Blocks: ${blocks.length}`;
 
     const moveType = moveTypeInput.value;
     const effectType = effectTypeInput ? effectTypeInput.value : 'Particle';
-    const moveset = buildMoveset(blocks, res, blockSize, gap, threshold, colorMode, singleColor, mediaType, duration, moveType, effectType);
+    const moveset = buildMoveset(blocks, res, blockSize, gap, duration, moveType, effectType, fps);
 
     const json = JSON.stringify(moveset, null, 2);
     const code = await encodeCode(moveset.slots);
@@ -445,37 +409,26 @@ async function generateMoveset() {
     output.value = exportFormat.value === 'code' ? code : json;
   } catch (e) {
     console.error(e);
-    showError('Generation failed: ' + (e.message || e.toString() || 'unknown error'));
+    showError('Generation failed: ' + (e.message || e.toString()));
   } finally {
     setGenerating(false);
   }
 }
 
-function sampleImageToBlocks(image, res, threshold, colorMode, singleColor, duration) {
+function sampleImageToBlocks(image, res, blockSize, threshold, colorMode, singleColor, duration) {
   const off = document.createElement('canvas');
-  off.width = image.width;
-  off.height = image.height;
+  off.width = res;
+  off.height = res;
   const octx = off.getContext('2d');
-  octx.drawImage(image, 0, 0);
+  octx.drawImage(image, 0, 0, res, res);
 
-  const imageData = octx.getImageData(0, 0, image.width, image.height);
-  const data = imageData.data;
-
-  const stepX = image.width / res;
-  const stepY = image.height / res;
-
+  const { data } = octx.getImageData(0, 0, res, res);
   const blocks = [];
 
   for (let gy = 0; gy < res; gy++) {
     for (let gx = 0; gx < res; gx++) {
-      const sx = Math.floor((gx + 0.5) * stepX);
-      const sy = Math.floor((gy + 0.5) * stepY);
-      const i = (sy * image.width + sx) * 4;
-
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      const a = data[i + 3];
+      const i = (gy * res + gx) * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
 
       if (a < threshold) continue;
 
@@ -490,11 +443,9 @@ function sampleImageToBlocks(image, res, threshold, colorMode, singleColor, dura
       }
 
       blocks.push({
-        id: `${gx},${gy}`,
-        gx,
-        gy,
-        x: gx / (res - 1),
-        y: gy / (res - 1),
+        gx, gy,
+        x: gx / (res - 1 || 1),
+        y: gy / (res - 1 || 1),
         color,
         size: blockSize,
         opacity: a / 255,
@@ -502,15 +453,12 @@ function sampleImageToBlocks(image, res, threshold, colorMode, singleColor, dura
       });
     }
   }
-
   return blocks;
 }
 
-async function sampleVideoToBlocks(video, res, threshold, colorMode, singleColor, duration, fps) {
+async function sampleVideoToBlocks(video, res, blockSize, threshold, colorMode, singleColor, duration, fps) {
   const blocks = [];
-  const vid = video;
-
-  const effectiveDuration = Math.min(duration, vid.duration);
+  const effectiveDuration = Math.min(duration, video.duration || duration);
   const frameInterval = 1.0 / fps;
   const numFrames = Math.ceil(effectiveDuration / frameInterval);
 
@@ -523,76 +471,61 @@ async function sampleVideoToBlocks(video, res, threshold, colorMode, singleColor
     const t = f * frameInterval;
     if (t > effectiveDuration) break;
 
-    await seekAndDrawFrame(vid, t, off, octx, res, res);
+    await seekAndDrawFrame(video, t, octx, res, res);
+    const { data } = octx.getImageData(0, 0, res, res);
 
-    const imageData = octx.getImageData(0, 0, res, res);
-    const data = imageData.data;
+    for (let gy = 0; gy < res; gy++) {
+      for (let gx = 0; gx < res; gx++) {
+        const i = (gy * res + gx) * 4;
+        const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
 
-    for (let i = 0; i < data.length; i += 4) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      const a = data[i + 3];
+        if (a < threshold) continue;
 
-      if (a < threshold) continue;
+        let color;
+        if (colorMode === 'single') {
+          color = singleColor;
+        } else if (colorMode === 'grayscale') {
+          const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+          color = `rgb(${gray},${gray},${gray})`;
+        } else {
+          color = `rgb(${r},${g},${b})`;
+        }
 
-      const gx = ((i / 4) % res);
-      const gy = Math.floor((i / 4) / res);
-
-      let color;
-      if (colorMode === 'single') {
-        color = singleColor;
-      } else if (colorMode === 'grayscale') {
-        const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-        color = `rgb(${gray},${gray},${gray})`;
-      } else {
-        color = `rgb(${r},${g},${b})`;
+        blocks.push({
+          gx, gy,
+          x: gx / (res - 1 || 1),
+          y: gy / (res - 1 || 1),
+          color,
+          size: blockSize,
+          opacity: a / 255,
+          time: t,
+        });
       }
-
-      blocks.push({
-        id: `${gx},${gy},${t.toFixed(3)}`,
-        gx,
-        gy,
-        x: gx / (res - 1),
-        y: gy / (res - 1),
-        color,
-        size: blockSize,
-        opacity: a / 255,
-        time: t,
-      });
     }
   }
-
   return blocks;
 }
 
-function seekAndDrawFrame(video, time, canvas, ctx, width, height) {
+function seekAndDrawFrame(video, time, ctx, width, height) {
   return new Promise((resolve) => {
     let resolved = false;
-    const onSeeked = () => {
+    const cleanup = () => {
       if (resolved) return;
       resolved = true;
       video.removeEventListener('seeked', onSeeked);
       ctx.drawImage(video, 0, 0, width, height);
       resolve();
     };
+    const onSeeked = () => cleanup();
     video.addEventListener('seeked', onSeeked, { once: true });
     video.currentTime = time;
-    setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        video.removeEventListener('seeked', onSeeked);
-        ctx.drawImage(video, 0, 0, width, height);
-        resolve();
-      }
-    }, 100);
+    setTimeout(cleanup, 500); // 500ms safety timeout for slow seeks
   });
 }
 
-function drawBlockPreview(blocks, blockSize, gap, totalTime) {
+function drawBlockPreview(blocks, res, gap, totalTime) {
   const canvas = blockCanvas;
   const ctx = canvas.getContext('2d');
-
   const size = 400;
   canvas.width = size;
   canvas.height = size;
@@ -601,159 +534,144 @@ function drawBlockPreview(blocks, blockSize, gap, totalTime) {
   ctx.fillStyle = '#0b0c10';
   ctx.fillRect(0, 0, size, size);
 
-  const res = Math.ceil(Math.sqrt(blocks.length)) || 32;
-  const tileSize = (size - (res - 1) * gap) / res;
-  const stride = tileSize + gap;
-
+  const stride = size / res;
+  const tileSize = Math.max(1, stride - gap);
   const previewTime = totalTime / 2;
 
   blocks.forEach(b => {
     if (mediaType === 'video' && Math.abs(b.time - previewTime) > 0.5) return;
-
     const px = Math.round(b.gx * stride);
     const py = Math.round(b.gy * stride);
-
     ctx.globalAlpha = b.opacity;
     ctx.fillStyle = b.color;
     ctx.fillRect(px, py, tileSize, tileSize);
-    ctx.globalAlpha = 1.0;
   });
+  ctx.globalAlpha = 1.0;
 }
 
-// ---- Build JJS slot structure ----
+// ---- JJS Data Model Builder ----
 
-// Max events per slot to stay under the 16MB WASM heap limit.
-// Each slot's DATA is compressed independently, so splitting across
-// slots lets us handle arbitrarily large videos/images.
-const MAX_EVENTS_PER_SLOT = 4000;
+const MAX_EVENTS_PER_SLOT = 1500;
+const MAX_SLOTS = 4;
+const ART_DISTANCE = 8;
+const ART_HEIGHT = 4;
 
-function buildVISUALot(b, blockSize, effectType, eventId) {
-  const colorStr = b.color.replace('rgb(', '').replace(')', '');
+const fmt = (n) => String(Math.round(n * 1000) / 1000);
+
+function blockPosition(b, res, pitch) {
+  const half = (res - 1) / 2;
+  const x = (b.gx - half) * pitch;
+  const y = (half - b.gy) * pitch + ART_HEIGHT;
+  return `${fmt(x)}, ${fmt(y)}, ${fmt(ART_DISTANCE)}`;
+}
+
+function buildVISUALot(b, blockSize, effectType, pos, life) {
+  const c = parseColorToRgbStr(b.color);
+  const transp = Math.round((1 - b.opacity) * 1000) / 1000;
   return {
     K_NAME: 'VISUAL',
     EFFECT: effectType,
-    COLOR: colorStr,
-    SIZE: `${blockSize}, ${blockSize}, ${blockSize}`,
-    POSITION: `${b.x.toFixed(3)}, ${b.y.toFixed(3)}, 0`,
-    TIME: Math.round(b.time * 1000) / 1000,
-    OPACITY: b.opacity,
-    ID: `b${eventId}`,
+    COLOR: c, 'ALT COLOR': c,
+    SIZE: blockSize, 'ALT SIZE': blockSize,
+    'SIZE 2': '-1, -1, -1', 'ALT SIZE 2': '-1, -1, -1',
+    OPACITY: transp, 'ALT OPACITY': transp,
+    POSITION: pos, 'ALT POSITION': pos,
+    ROTATION: '0, 0, 0', 'ALT ROTATION': '0, 0, 0',
+    TIME: life, AMOUNT: 1, TEXTURE: 0,
+    'BODY PART': 'HumanoidRootPart',
+    'EASING STYLE': 'Linear', 'EASING DIRECTION': 'In',
+    'LAST HIT': -1,
+    'CAN COLLIDE': false, 'CLIENT SIDED': false, 'RUN ON SERVER': false,
+    'CANCEL ON INTERRUPT': false, 'RELATIVE FROM BRANCH': false,
   };
 }
 
-function buildHITBOX(b, blockSize, eventId) {
-  const colorStr = b.color.replace('rgb(', '').replace(')', '');
+function buildHITBOX(blockSize, pos) {
   return {
     K_NAME: 'HITBOX',
     PREVIEW: [0, 0.1],
     DAMAGE: 1,
-    STUN_ANIM: true,
-    HIT_USER: false,
-    BLOCKABLE: false,
-    SINGLE_TARGET: false,
+    'STUN ANIM': true, 'HIT USER': false, BLOCKABLE: false, 'SINGLE TARGET': false,
     SIZE: `${blockSize}, ${blockSize}, ${blockSize}`,
-    COLOR: colorStr,
-    POSITION: `${b.x.toFixed(3)}, ${b.y.toFixed(3)}, 0`,
-    TIME: Math.round(b.time * 1000) / 1000,
-    ID: `b${eventId}`,
+    POSITION: pos,
+    ROTATION: '0, 0, 0',
   };
 }
 
-function buildMoveset(blocks, res, blockSize, gap, threshold, colorMode, singleColor, mediaType, duration, moveType, effectType) {
-  const slots = [];
+function buildMoveset(blocks, res, blockSize, gap, duration, moveType, effectType, fps) {
+  const pitch = blockSize + gap;
+  const life = mediaType === 'video' ? Math.round((1 / (fps || 10)) * 1000) / 1000 : duration;
 
-  const timeGroups = new Map();
+  const groups = new Map();
   blocks.forEach(b => {
-    const key = b.time.toFixed(3);
-    if (!timeGroups.has(key)) timeGroups.set(key, []);
-    timeGroups.get(key).push(b);
+    const k = b.time.toFixed(3);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(b);
   });
+  const times = [...groups.keys()].map(Number).sort((a, b) => a - b);
 
-  // Build all events in order
   const line = [];
-  let eventId = 0;
-
-  timeGroups.forEach((group, timeKey) => {
-    const time = parseFloat(timeKey);
-    group.forEach(b => {
-      if (moveType === 'particle') {
-        line.push(buildVISUALot(b, blockSize, effectType, eventId++));
-      } else {
-        line.push(buildHITBOX(b, blockSize, eventId++));
-      }
+  let prev = null;
+  times.forEach(t => {
+    if (prev !== null && t > prev) {
+      line.push({ K_NAME: 'WAIT', TIME: Math.round((t - prev) * 1000) / 1000 });
+    }
+    prev = t;
+    groups.get(t.toFixed(3)).forEach(b => {
+      const pos = blockPosition(b, res, pitch);
+      line.push(moveType === 'particle'
+        ? buildVISUALot(b, blockSize, effectType, pos, life)
+        : buildHITBOX(blockSize, pos));
     });
   });
 
-  // Split events across multiple slots if needed to stay under WASM heap limit
   const numSlots = Math.ceil(line.length / MAX_EVENTS_PER_SLOT) || 1;
+  if (numSlots > MAX_SLOTS) {
+    throw new Error(`Too many blocks (${line.length}). Limit is ${MAX_EVENTS_PER_SLOT * MAX_SLOTS}. Lower the resolution.`);
+  }
+  if (mediaType === 'video' && numSlots > 1) {
+    throw new Error(`Video needs ${line.length} events, exceeding 1 skill limit (${MAX_EVENTS_PER_SLOT}). Reduce FPS or duration.`);
+  }
 
+  const label = mediaType === 'video' ? 'Video' : 'Image';
+  const slots = [];
   for (let s = 0; s < numSlots; s++) {
-    const start = s * MAX_EVENTS_PER_SLOT;
-    const chunk = line.slice(start, start + MAX_EVENTS_PER_SLOT);
-
     slots.push({
-      DATA: {
-        Req: [],
-        Line: chunk,
-        Prop: [],
-        Branch: null,
-      },
-      NAME: numSlots === 1
-        ? (mediaType === 'video' ? 'Video Moveset' : 'Image Moveset')
-        : `${mediaType === 'video' ? 'Video' : 'Image'} Moveset Part ${s + 1}`,
+      ADD: false,
+      NAME: numSlots === 1 ? `${label} Moveset` : `${label} Moveset ${s + 1}`,
       K_NAME: 'SKILL',
       KEY: s + 1,
-      TOOL_TIP: `${mediaType} moveset generated from media${numSlots > 1 ? ` (part ${s + 1}/${numSlots})` : ''}`,
       COOLDOWN: mediaType === 'video' ? Math.ceil(duration) : 5,
+      DATA: { Line: line.slice(s * MAX_EVENTS_PER_SLOT, (s + 1) * MAX_EVENTS_PER_SLOT), Req: [], Prop: [] },
+      'TOOL TIP': '',
     });
   }
 
   return {
     name: `${mediaType}-moveset`,
-    base: 'custom',
-    mediaType,
-    duration,
     slots,
-    settings: {
-      resolution: res,
-      blockSize,
-      gap,
-      threshold,
-      colorMode,
-      singleColor,
-      duration,
-      fps: mediaType === 'video' ? parseInt(fpsInput.value, 10) : null,
-      moveType,
-      effectType,
-      numSlots,
-    },
   };
 }
 
-// ---- Clipboard / download ----
+// ---- Clipboard & Download ----
 
 async function copyOutput() {
-  const text = output.value;
-  if (!text) return;
+  if (!output.value) return;
   try {
-    await navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(output.value);
     const orig = copyBtn.textContent;
     copyBtn.textContent = 'Copied!';
     setTimeout(() => { copyBtn.textContent = orig; }, 1200);
-  } catch (err) {
+  } catch {
     output.select();
     document.execCommand('copy');
-    const orig = copyBtn.textContent;
-    copyBtn.textContent = 'Copied!';
-    setTimeout(() => { copyBtn.textContent = orig; }, 1200);
   }
 }
 
 function downloadOutput() {
-  const text = output.value;
-  if (!text) return;
+  if (!output.value) return;
   const ext = exportFormat.value === 'code' ? 'jjsmoveset' : 'json';
-  const blob = new Blob([text], { type: 'text/plain' });
+  const blob = new Blob([output.value], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -764,14 +682,12 @@ function downloadOutput() {
   URL.revokeObjectURL(url);
 }
 
-// ---- Decode existing code ----
-
 async function decodeExistingCode() {
   const code = importInput.value.trim();
   if (!code) return;
 
   if (!zstdReady) {
-    showError('zstd library not ready yet. Please wait for it to finish loading.');
+    showError('zstd library is still loading. Please wait.');
     return;
   }
 
@@ -782,7 +698,7 @@ async function decodeExistingCode() {
     output.value = JSON.stringify({ slots: decoded }, null, 2);
     output.scrollTop = 0;
   } catch (e) {
-    showError('Failed to decode code: ' + (e.message || e.toString() || 'unknown error'));
+    showError('Failed to decode: ' + (e.message || e.toString()));
   } finally {
     setGenerating(false);
   }
