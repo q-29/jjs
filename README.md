@@ -9,6 +9,7 @@ Upload an image or video and convert it into a **real JJS Skill Builder import c
 ## Features
 - Fully client-side — works on **Cloudflare Pages, GitHub Pages, or any static host**. No backend required.
 - Image/video upload → color block grid (positions, colors, sizes, opacity)
+- Resolution sets the number of blocks along the longest side. For example, a 16:9 image at resolution 32 uses a 32 × 18 grid. Uncheck **Keep original proportions** to stretch the upload to a square.
 - Blocks touch by default with adjustable gap/spacing between them
 - Adjustable resolution, block size, gap, alpha threshold, and color mode
 - Live dual-panel canvas preview (original vs. block moveset)
