@@ -5,6 +5,7 @@
 
 const mediaInput = document.getElementById('mediaInput');
 const resolutionInput = document.getElementById('resolution');
+const preserveAspectInput = document.getElementById('preserveAspect');
 const blockSizeInput = document.getElementById('blockSize');
 const gapInput = document.getElementById('gap');
 const thresholdInput = document.getElementById('threshold');
@@ -42,7 +43,6 @@ const videoPreview = document.getElementById('videoPreview');
 
 let media = null;
 let mediaType = null;
-let blocks = [];
 let zstdReady = false;
 let getZstdCodec = null;
 let isGenerating = false;
@@ -350,6 +350,15 @@ function drawOriginalFrame(time) {
 
 // ---- Sampling & Generation ----
 
+function samplingGrid(width, height, resolution, preserveAspect) {
+  if (!preserveAspect) return { columns: resolution, rows: resolution };
+  const longest = Math.max(width, height);
+  return {
+    columns: Math.max(1, Math.round(resolution * width / longest)),
+    rows: Math.max(1, Math.round(resolution * height / longest)),
+  };
+}
+
 async function generateMoveset() {
   if (!media || !zstdReady || isGenerating) return;
 
@@ -366,17 +375,39 @@ async function generateMoveset() {
     const duration = parseFloat(durationInput.value);
     const fps = fpsInput ? parseInt(fpsInput.value, 10) : 10;
 
-    if (mediaType === 'image') {
-      blocks = sampleImageToBlocks(media, res, blockSize, threshold, colorMode, singleColor, duration);
+    const source = media;
+    const isVideo = mediaType === 'video';
+    const width = isVideo ? source.videoWidth : source.naturalWidth;
+    const height = isVideo ? source.videoHeight : source.naturalHeight;
+    if (!width || !height) return;
+    const grid = samplingGrid(width, height, res, preserveAspectInput.checked);
+    const canvas = document.createElement('canvas');
+    canvas.width = grid.columns;
+    canvas.height = grid.rows;
+    const ctx = canvas.getContext('2d');
+    const blocks = [];
+    let previewTime = null;
+
+    if (isVideo) {
+      const clipDuration = Math.min(duration, source.duration || duration);
+      const frameInterval = 1 / fps;
+      const frameCount = Math.ceil(clipDuration / frameInterval);
+      previewTime = Math.floor(frameCount / 2) * frameInterval;
+      for (let frame = 0; frame < frameCount; frame++) {
+        const time = frame * frameInterval;
+        await seekAndDrawFrame(source, time, ctx, grid.columns, grid.rows);
+        appendFrameBlocks(ctx, blocks, blockSize, threshold, colorMode, singleColor, time);
+      }
     } else {
-      blocks = await sampleVideoToBlocks(media, res, blockSize, threshold, colorMode, singleColor, duration, fps);
+      ctx.drawImage(source, 0, 0, grid.columns, grid.rows);
+      appendFrameBlocks(ctx, blocks, blockSize, threshold, colorMode, singleColor, duration);
     }
 
-    drawBlockPreview(blocks, res, gap, mediaType === 'video' ? media.duration : duration);
-    blockCountEl.textContent = `Blocks: ${blocks.length}`;
+    drawBlockPreview(blocks, grid, gap, previewTime);
+    blockCountEl.textContent = `Blocks: ${blocks.length} · Grid: ${grid.columns} × ${grid.rows}`;
 
     const effectType = effectTypeInput ? effectTypeInput.value : 'Block';
-    const moveset = buildMoveset(blocks, res, blockSize, gap, duration, effectType, fps);
+    const moveset = buildMoveset(blocks, grid, blockSize, gap, duration, effectType, fps);
 
     const json = JSON.stringify(moveset, null, 2);
     const code = await encodeCode(moveset.slots);
@@ -390,19 +421,13 @@ async function generateMoveset() {
   }
 }
 
-function sampleImageToBlocks(image, res, blockSize, threshold, colorMode, singleColor, duration) {
-  const off = document.createElement('canvas');
-  off.width = res;
-  off.height = res;
-  const octx = off.getContext('2d');
-  octx.drawImage(image, 0, 0, res, res);
+function appendFrameBlocks(ctx, blocks, blockSize, threshold, colorMode, singleColor, time) {
+  const { width, height } = ctx.canvas;
+  const { data } = ctx.getImageData(0, 0, width, height);
 
-  const { data } = octx.getImageData(0, 0, res, res);
-  const blocks = [];
-
-  for (let gy = 0; gy < res; gy++) {
-    for (let gx = 0; gx < res; gx++) {
-      const i = (gy * res + gx) * 4;
+  for (let gy = 0; gy < height; gy++) {
+    for (let gx = 0; gx < width; gx++) {
+      const i = (gy * width + gx) * 4;
       const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
 
       if (a < threshold) continue;
@@ -422,59 +447,10 @@ function sampleImageToBlocks(image, res, blockSize, threshold, colorMode, single
         color,
         size: blockSize,
         opacity: a / 255,
-        time: duration,
+        time,
       });
     }
   }
-  return blocks;
-}
-
-async function sampleVideoToBlocks(video, res, blockSize, threshold, colorMode, singleColor, duration, fps) {
-  const blocks = [];
-  const effectiveDuration = Math.min(duration, video.duration || duration);
-  const frameInterval = 1.0 / fps;
-  const numFrames = Math.ceil(effectiveDuration / frameInterval);
-
-  const off = document.createElement('canvas');
-  off.width = res;
-  off.height = res;
-  const octx = off.getContext('2d');
-
-  for (let f = 0; f < numFrames; f++) {
-    const t = f * frameInterval;
-    if (t > effectiveDuration) break;
-
-    await seekAndDrawFrame(video, t, octx, res, res);
-    const { data } = octx.getImageData(0, 0, res, res);
-
-    for (let gy = 0; gy < res; gy++) {
-      for (let gx = 0; gx < res; gx++) {
-        const i = (gy * res + gx) * 4;
-        const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
-
-        if (a < threshold) continue;
-
-        let color;
-        if (colorMode === 'single') {
-          color = singleColor;
-        } else if (colorMode === 'grayscale') {
-          const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-          color = `rgb(${gray},${gray},${gray})`;
-        } else {
-          color = `rgb(${r},${g},${b})`;
-        }
-
-        blocks.push({
-          gx, gy,
-          color,
-          size: blockSize,
-          opacity: a / 255,
-          time: t,
-        });
-      }
-    }
-  }
-  return blocks;
 }
 
 function seekAndDrawFrame(video, time, ctx, width, height) {
@@ -494,23 +470,20 @@ function seekAndDrawFrame(video, time, ctx, width, height) {
   });
 }
 
-function drawBlockPreview(blocks, res, gap, totalTime) {
+function drawBlockPreview(blocks, grid, gap, previewTime) {
   const canvas = blockCanvas;
   const ctx = canvas.getContext('2d');
-  const size = 400;
-  canvas.width = size;
-  canvas.height = size;
+  const stride = 400 / Math.max(grid.columns, grid.rows);
+  canvas.width = Math.round(grid.columns * stride);
+  canvas.height = Math.round(grid.rows * stride);
 
-  ctx.clearRect(0, 0, size, size);
   ctx.fillStyle = '#0b0c10';
-  ctx.fillRect(0, 0, size, size);
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  const stride = size / res;
   const tileSize = Math.max(1, stride - gap);
-  const previewTime = totalTime / 2;
 
   blocks.forEach(b => {
-    if (mediaType === 'video' && Math.abs(b.time - previewTime) > 0.5) return;
+    if (previewTime !== null && b.time !== previewTime) return;
     const px = Math.round(b.gx * stride);
     const py = Math.round(b.gy * stride);
     ctx.globalAlpha = b.opacity;
@@ -526,10 +499,9 @@ const ART_DISTANCE = 8;
 const ART_HEIGHT = 4;
 const fmt = (n) => String(Math.round(n * 1000) / 1000);
 
-function blockPosition(b, res, pitch) {
-  const half = (res - 1) / 2;
-  const x = (b.gx - half) * pitch;
-  const y = (half - b.gy) * pitch + ART_HEIGHT;
+function blockPosition(b, grid, pitch) {
+  const x = (b.gx - (grid.columns - 1) / 2) * pitch;
+  const y = ((grid.rows - 1) / 2 - b.gy) * pitch + ART_HEIGHT;
   return `${fmt(x)}, ${fmt(y)}, ${fmt(ART_DISTANCE)}`;
 }
 
@@ -566,7 +538,7 @@ function buildVISUALot(b, blockSize, effectType, pos, life) {
   };
 }
 
-function buildMoveset(blocks, res, blockSize, gap, duration, effectType, fps) {
+function buildMoveset(blocks, grid, blockSize, gap, duration, effectType, fps) {
   const pitch = blockSize + gap;
   const life = mediaType === 'video' ? Math.round((1 / (fps || 10)) * 1000) / 1000 : duration;
 
@@ -594,7 +566,7 @@ function buildMoveset(blocks, res, blockSize, gap, duration, effectType, fps) {
     }
     prev = t;
     groups.get(t.toFixed(3)).forEach(b => {
-      const pos = blockPosition(b, res, pitch);
+      const pos = blockPosition(b, grid, pitch);
       line.push(buildVISUALot(b, blockSize, effectType, pos, life));
     });
   });
